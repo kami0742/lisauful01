@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>ドライブ進行方向ナビ & 道路レーダー</title>
+
+  <!-- PWA対応 -->
+  <link rel="manifest" href='data:application/manifest+json,{"name":"ドライブレーダーナビ","short_name":"ドライブナビ","start_url":".","display":"standalone","background_color":"#0f172a","theme_color":"#0f172a","icons":[{"src":"https://via.placeholder.com/192/0284c7/ffffff?text=Radar","sizes":"192x192","type":"image/png"}]}'>
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background-color: #0f172a;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      overflow-x: hidden;
+    }
+
+    .app-container {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      min-height: -webkit-fill-available;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      background-color: #1e293b;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #334155;
+      z-index: 20;
+    }
+    h1 {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #38bdf8;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .status-badge {
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      border-radius: 12px;
+      background-color: #334155;
+      color: #94a3b8;
+      transition: all 0.3s ease;
+    }
+    .status-badge.active {
+      background-color: #065f46;
+      color: #34d399;
+    }
+    .status-badge.warn {
+      background-color: #854d0e;
+      color: #fde047;
+    }
+
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .radar-container {
+      position: relative;
+      width: 100%;
+      height: 300px;
+      min-height: 260px;
+      background: radial-gradient(circle at 50% 82%, #1e293b 0%, #0f172a 100%);
+      display: flex;
+      justify-content: center;
+      align-items: flex-end;
+      border-bottom: 1px solid #334155;
+      flex-shrink: 0;
+    }
+    canvas#radarCanvas {
+      width: 100%;
+      height: 100%;
+      max-width: 500px;
+    }
+    .radar-controls {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 5;
+    }
+    .btn-mini {
+      background: rgba(30, 41, 59, 0.85);
+      border: 1px solid #475569;
+      color: #e2e8f0;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      backdrop-filter: blur(4px);
+    }
+
+    .settings-panel {
+      background-color: #1e293b;
+      padding: 10px 14px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      border-bottom: 1px solid #334155;
+      flex-shrink: 0;
+    }
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .control-group.full-width {
+      grid-column: span 2;
+    }
+    label {
+      font-size: 0.72rem;
+      color: #94a3b8;
+      display: flex;
+      justify-content: space-between;
+    }
+    label span.val {
+      color: #38bdf8;
+      font-weight: bold;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: #38bdf8;
+    }
+    select {
+      width: 100%;
+      background-color: #0f172a;
+      border: 1px solid #334155;
+      color: #f8fafc;
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+    }
+
+    .telemetry-bar {
+      display: flex;
+      justify-content: space-around;
+      background-color: #0f172a;
+      padding: 6px 12px;
+      font-size: 0.78rem;
+      border-bottom: 1px solid #1e293b;
+      flex-shrink: 0;
+    }
+    .telemetry-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .telemetry-item .label {
+      font-size: 0.65rem;
+      color: #64748b;
+    }
+    .telemetry-item .value {
+      font-weight: bold;
+      color: #38bdf8;
+    }
+
+    .spot-list-container {
+      padding: 10px;
+      min-height: 120px;
+      flex: 1;
+    }
+    .spot-card {
+      background-color: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .spot-card.selected {
+      border-color: #f97316;
+      background-color: #2a1e1b;
+    }
+    .spot-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .spot-name {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #f1f5f9;
+    }
+    .spot-meta {
+      font-size: 0.72rem;
+      color: #94a3b8;
+      display: flex;
+      gap: 8px;
+    }
+    .btn-speak {
+      background-color: #0284c7;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+
+    .action-bar {
+      position: sticky;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 10px 14px;
+      background-color: #1e293b;
+      border-top: 1px solid #334155;
+      display: flex;
+      gap: 8px;
+      z-index: 20;
+    }
+    .btn {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-weight: bold;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background-color: #0284c7;
+      color: white;
+    }
+    .btn-secondary {
+      background-color: #334155;
+      color: #e2e8f0;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="app-container">
+    <header>
+      <h1>🚗 ドライブナビ & 道路レーダー</h1>
+      <div id="gpsStatus" class="status-badge">GPS停止中</div>
+    </header>
+
+    <main>
+      <div class="radar-container">
+        <canvas id="radarCanvas" width="400" height="300"></canvas>
+        <div class="radar-controls">
+          <button id="btnViewMode" class="btn-mini">モード: Heading Up</button>
+        </div>
+      </div>
+
+      <div class="settings-panel">
+        <div class="control-group">
+          <label>検知視野角 <span id="angleVal" class="val">90°</span></label>
+          <input type="range" id="angleSlider" min="30" max="180" step="10" value="90">
+        </div>
+        <div class="control-group">
+          <label>最大検知距離 <span id="distVal" class="val">10 km</span></label>
+          <input type="range" id="distSlider" min="1" max="30" step="1" value="10">
+        </div>
+        <div class="control-group full-width">
+          <label>カテゴリー</label>
+          <select id="categorySelect">
+            <option value="cafe">☕ カフェ</option>
+            <option value="diner">🍚 食堂 / レストラン / 和食</option>
+            <option value="gluten_free">🌾 グルテンフリー・自然食</option>
+            <option value="michi_no_eki">🅿️ 道の駅・サービスエリア・パーキング</option>
+            <option value="tourism">🏞️ 観光地・名所・ビューポイント</option>
+            <option value="all">📍 すべて</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="telemetry-bar">
+        <div class="telemetry-item">
+          <span class="label">移動速度</span>
+          <span id="speedVal" class="value">0 km/h</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="label">進行方位</span>
+          <span id="headingVal" class="value">0° (北)</span>
+        </div>
+        <div class="telemetry-item">
+          <span class="label">前方スポット</span>
+          <span id="countVal" class="value">0 件</span>
+        </div>
+      </div>
+
+      <div class="spot-list-container" id="spotList">
+        <div style="text-align:center; color:#64748b; padding-top:15px; font-size:0.82rem;">
+          GPSを開始するかデモ走行を実行してください
+        </div>
+      </div>
+    </main>
+
+    <div class="action-bar">
+      <button id="btnToggleGPS" class="btn btn-primary">GPS開始</button>
+      <button id="btnDemo" class="btn btn-secondary">デモ走行</button>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      isTracking: false,
+      isDemo: false,
+      demoInterval: null,
+      watchId: null,
+      lastFetchPos: null,
+      currentPos: { lat: 35.0116, lng: 135.7681, heading: 0, speed: 0 },
+      hasRealLocation: false,
+      spots: [],
+      roads: [],
+      filteredSpots: [],
+      selectedSpotId: null,
+      fovAngle: 90,
+      maxDistanceKm: 10,
+      category: 'cafe',
+      headingUp: true
+    };
+
+    const categoryIcons = {
+      cafe: '☕',
+      diner: '🍚',
+      gluten_free: '🌾',
+      michi_no_eki: '🅿️',
+      tourism: '🏞️',
+      all: '📍'
+    };
+
+    const canvas = document.getElementById('radarCanvas');
+    const ctx = canvas.getContext('2d');
+    const gpsStatusEl = document.getElementById('gpsStatus');
+    const angleSlider = document.getElementById('angleSlider');
+    const distSlider = document.getElementById('distSlider');
+    const angleValEl = document.getElementById('angleVal');
+    const distValEl = document.getElementById('distVal');
+    const categorySelect = document.getElementById('categorySelect');
+    const speedValEl = document.getElementById('speedVal');
+    const headingValEl = document.getElementById('headingVal');
+    const countValEl = document.getElementById('countVal');
+    const spotListEl = document.getElementById('spotList');
+    const btnToggleGPS = document.getElementById('btnToggleGPS');
+    const btnDemo = document.getElementById('btnDemo');
+    const btnViewMode = document.getElementById('btnViewMode');
+
+    angleSlider.addEventListener('input', (e) => {
+      state.fovAngle = parseInt(e.target.value, 10);
+      angleValEl.textContent = `${state.fovAngle}°`;
+      updateSpotFiltering();
+    });
+
+    distSlider.addEventListener('input', (e) => {
+      state.maxDistanceKm = parseInt(e.target.value, 10);
+      distValEl.textContent = `${state.maxDistanceKm} km`;
+      fetchOverpassData(true);
+    });
+
+    categorySelect.addEventListener('change', (e) => {
+      state.category = e.target.value;
+      fetchOverpassData(true);
+    });
+
+    btnViewMode.addEventListener('click', () => {
+      state.headingUp = !state.headingUp;
+      btnViewMode.textContent = `モード: ${state.headingUp ? 'Heading Up' : 'North Up'}`;
+      drawRadar();
+    });
+
+    btnToggleGPS.addEventListener('click', toggleGPS);
+    btnDemo.addEventListener('click', toggleDemo);
+
+    canvas.addEventListener('click', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const clickX = (e.clientX - rect.left) * (canvas.width / rect.width);
+      const clickY = (e.clientY - rect.top) * (canvas.height / rect.height);
+      
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height * 0.82;
+      const radius = canvas.height * 0.72;
+
+      let found = null;
+      let minDistance = 22;
+
+      state.spots.forEach(spot => {
+        const { px, py } = calculateCanvasPos(spot.distance, spot.bearing, centerX, centerY, radius);
+        const dist = Math.hypot(clickX - px, clickY - py);
+        if (dist < minDistance) {
+          minDistance = dist;
+          found = spot;
+        }
+      });
+
+      if (found) {
+        state.selectedSpotId = found.id;
+        speakText(`${found.name}。距離${found.distance.toFixed(1)}キロメートル。`);
+        updateSpotFiltering();
+      }
+    });
+
+    function toRad(deg) { return deg * Math.PI / 180; }
+    function toDeg(rad) { return rad * 180 / Math.PI; }
+
+    function calculateDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371; 
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function calculateBearing(lat1, lon1, lat2, lon2) {
+      const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
+      const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+                Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
+      return (toDeg(Math.atan2(y, x)) + 360) % 360;
+    }
+
+    function isSpotInSector(spotBearing, heading, fov) {
+      let diff = (spotBearing - heading + 360) % 360;
+      if (diff > 180) diff -= 360;
+      return Math.abs(diff) <= (fov / 2);
+    }
+
+    // ★ Overpass QL 取得処理の修正 ★
+    async function fetchOverpassData(force = false) {
+      const { lat, lng } = state.currentPos;
+
+      if (!force && state.lastFetchPos) {
+        const movedDist = calculateDistance(state.lastFetchPos.lat, state.lastFetchPos.lng, lat, lng);
+        if (movedDist < 0.4) return;
+      }
+
+      state.lastFetchPos = { lat, lng };
+      const radiusMeters = state.maxDistanceKm * 1000;
+
+      // 正しいOverpass QLタグ判定
+      let overpassCategoryFilter = '';
+      switch (state.category) {
+        case 'cafe':
+          overpassCategoryFilter = 'nwr["amenity"="cafe"];';
+          break;
+        case 'diner':
+          overpassCategoryFilter = 'nwr["amenity"~"restaurant|food_court|fast_food"];';
+          break;
+        case 'gluten_free':
+          overpassCategoryFilter = 'nwr["diet:gluten_free"="yes"]; nwr["organic"="yes"];';
+          break;
+        case 'michi_no_eki':
+          overpassCategoryFilter = 'nwr["highway"="rest_area"]; nwr["highway"="services"]; nwr["tourism"="information"];';
+          break;
+        case 'tourism':
+          overpassCategoryFilter = 'nwr["tourism"~"attraction|viewpoint|museum"];';
+          break;
+        default: // all
+          overpassCategoryFilter = 'nwr["amenity"~"cafe|restaurant"]; nwr["highway"="rest_area"]; nwr["tourism"~"attraction|viewpoint"];';
+          break;
+      }
+
+      const query = `
+        [out:json][timeout:15];
+        (
+          ${overpassCategoryFilter.replace(/;/g, `(around:${radiusMeters},${lat},${lng});`)}
+          way["highway"~"motorway|trunk|primary|secondary"](around:${radiusMeters},${lat},${lng});
+        );
+        out center body;
+        >;
+        out skel qt;
+      `;
+
+      try {
+        const res = await fetch('https://overpass-api.de/api/interpreter', {
+          method: 'POST',
+          body: 'data=' + encodeURIComponent(query)
+        });
+        
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        
+        const nodeMap = {};
+        data.elements.forEach(el => {
+          if (el.type === 'node') {
+            nodeMap[el.id] = { lat: el.lat, lng: el.lon };
+          }
+        });
+
+        const newSpots = [];
+        data.elements.forEach(el => {
+          if (el.tags && (el.tags.name || el.tags['name:ja'])) {
+            let itemLat = el.lat;
+            let itemLng = el.lon;
+
+            // WayやAreaの場合はセンター座標（center）を使用
+            if (!itemLat && el.center) {
+              itemLat = el.center.lat;
+              itemLng = el.center.lon;
+            }
+
+            if (itemLat && itemLng) {
+              let cat = state.category;
+              const name = el.tags['name:ja'] || el.tags.name;
+
+              newSpots.push({
+                id: el.id,
+                name: name,
+                lat: itemLat,
+                lng: itemLng,
+                category: cat,
+                icon: categoryIcons[cat] || '📍'
+              });
+            }
+          }
+        });
+
+        state.spots = newSpots;
+
+        state.roads = data.elements.filter(el => el.type === 'way' && el.nodes && !el.tags.amenity).map(way => {
+          const points = way.nodes.map(nid => nodeMap[nid]).filter(p => p !== undefined);
+          return {
+            id: way.id,
+            type: way.tags ? way.tags.highway : 'primary',
+            points: points
+          };
+        });
+
+      } catch (err) {
+        console.warn('Overpass APIからの読み込みに制限が発生しました。サンプルデータを生成します。', err);
+        generateMockDataAroundCurrent();
+      }
+
+      updateSpotFiltering();
+    }
+
+    function generateMockDataAroundCurrent() {
+      const { lat, lng } = state.currentPos;
+      state.spots = [
+        { id: 'm1', name: "レイクサイド カフェ", category: state.category, icon: categoryIcons[state.category] || "☕", lat: lat + 0.008, lng: lng + 0.006 },
+        { id: 'm2', name: "ドライブイン 和食処", category: state.category, icon: categoryIcons[state.category] || "🍚", lat: lat + 0.012, lng: lng + 0.002 },
+        { id: 'm3', name: "道の駅 道路休憩所", category: state.category, icon: categoryIcons[state.category] || "🅿️", lat: lat + 0.018, lng: lng + 0.015 },
+        { id: 'm4', name: "展望グラウンド 観光地", category: state.category, icon: categoryIcons[state.category] || "🏞️", lat: lat + 0.025, lng: lng - 0.008 }
+      ];
+
+      state.roads = [
+        {
+          id: 'r1',
+          type: 'primary',
+          points: [
+            { lat: lat - 0.01, lng: lng - 0.005 },
+            { lat: lat, lng: lng },
+            { lat: lat + 0.03, lng: lng + 0.02 }
+          ]
+        }
+      ];
+    }
+
+    function updateSpotFiltering() {
+      const { lat, lng, heading } = state.currentPos;
+
+      state.spots.forEach(spot => {
+        spot.distance = calculateDistance(lat, lng, spot.lat, spot.lng);
+        spot.bearing = calculateBearing(lat, lng, spot.lat, spot.lng);
+        spot.inSector = spot.distance <= state.maxDistanceKm && 
+                        isSpotInSector(spot.bearing, heading, state.fovAngle);
+      });
+
+      state.filteredSpots = state.spots
+        .filter(s => s.inSector)
+        .sort((a, b) => a.distance - b.distance);
+
+      countValEl.textContent = `${state.filteredSpots.length} 件`;
+      renderSpotList();
+      drawRadar();
+    }
+
+    function calculateCanvasPos(distance, bearing, centerX, centerY, radius) {
+      const scale = radius / state.maxDistanceKm;
+      const r = Math.min(distance, state.maxDistanceKm) * scale;
+      
+      let angle = bearing;
+      if (state.headingUp) {
+        angle = (bearing - state.currentPos.heading + 360) % 360;
+      }
+
+      const rad = toRad(angle - 90);
+      return {
+        px: centerX + r * Math.cos(rad),
+        py: centerY + r * Math.sin(rad)
+      };
+    }
+
+    function drawRadar() {
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height * 0.82;
+      const radius = canvas.height * 0.72;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 1;
+      [0.33, 0.66, 1.0].forEach(ratio => {
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius * ratio, toRad(-190), toRad(10));
+        ctx.stroke();
+      });
+
+      const startAngleDeg = state.headingUp ? 
+        (-90 - state.fovAngle / 2) : 
+        (state.currentPos.heading - 90 - state.fovAngle / 2);
+      const endAngleDeg = startAngleDeg + state.fovAngle;
+
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.15)';
+      ctx.strokeStyle = 'rgba(52, 211, 153, 0.5)';
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY);
+      ctx.arc(centerX, centerY, radius, toRad(startAngleDeg), toRad(endAngleDeg));
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      state.roads.forEach(road => {
+        if (!road.points || road.points.length < 2) return;
+
+        ctx.beginPath();
+        let first = true;
+        
+        road.points.forEach(pt => {
+          const dist = calculateDistance(state.currentPos.lat, state.currentPos.lng, pt.lat, pt.lng);
+          const bear = calculateBearing(state.currentPos.lat, state.currentPos.lng, pt.lat, pt.lng);
+          const { px, py } = calculateCanvasPos(dist, bear, centerX, centerY, radius);
+
+          if (first) {
+            ctx.moveTo(px, py);
+            first = false;
+          } else {
+            ctx.lineTo(px, py);
+          }
+        });
+
+        if (road.type === 'motorway') {
+          ctx.strokeStyle = '#f43f5e';
+          ctx.lineWidth = 3;
+        } else if (road.type === 'trunk' || road.type === 'primary') {
+          ctx.strokeStyle = '#38bdf8';
+          ctx.lineWidth = 2;
+        } else {
+          ctx.strokeStyle = '#64748b';
+          ctx.lineWidth = 1.2;
+        }
+        ctx.stroke();
+      });
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, 7, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (!state.headingUp) {
+        const hRad = toRad(state.currentPos.heading - 90);
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY);
+        ctx.lineTo(centerX + 20 * Math.cos(hRad), centerY + 20 * Math.sin(hRad));
+        ctx.stroke();
+      }
+
+      state.spots.forEach(spot => {
+        const { px, py } = calculateCanvasPos(spot.distance, spot.bearing, centerX, centerY, radius);
+        const isSelected = spot.id === state.selectedSpotId;
+
+        ctx.beginPath();
+        ctx.arc(px, py, isSelected ? 7 : (spot.inSector ? 5.5 : 3.5), 0, Math.PI * 2);
+
+        if (isSelected) {
+          ctx.fillStyle = '#f97316';
+        } else if (spot.inSector) {
+          ctx.fillStyle = '#10b981';
+        } else {
+          ctx.fillStyle = '#475569';
+        }
+        ctx.fill();
+
+        if (spot.inSector || isSelected) {
+          drawLeaderLineAndLabel(px, py, spot, isSelected, centerX);
+        }
+      });
+    }
+
+    function drawLeaderLineAndLabel(px, py, spot, isSelected, centerX) {
+      const isRight = px >= centerX;
+      const cornerX = px + (isRight ? 14 : -14);
+      const cornerY = py - 14;
+      const endX = cornerX + (isRight ? 18 : -18);
+
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(cornerX, cornerY);
+      ctx.lineTo(endX, cornerY);
+      ctx.strokeStyle = isSelected ? '#f97316' : '#10b981';
+      ctx.lineWidth = 1.3;
+      ctx.stroke();
+
+      const labelText = `${spot.icon} ${spot.name}`;
+      ctx.font = 'bold 9.5px sans-serif';
+      const textWidth = ctx.measureText(labelText).width;
+      const tagPadding = 4;
+      const tagW = textWidth + tagPadding * 2;
+      const tagH = 15;
+      const tagX = isRight ? endX : endX - tagW;
+      const tagY = cornerY - tagH / 2;
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+      ctx.strokeStyle = isSelected ? '#f97316' : '#059669';
+      ctx.lineWidth = 1;
+      
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(tagX, tagY, tagW, tagH, 3);
+      } else {
+        ctx.rect(tagX, tagY, tagW, tagH);
+      }
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(labelText, tagX + tagPadding, cornerY);
+    }
+
+    function renderSpotList() {
+      if (state.filteredSpots.length === 0) {
+        spotListEl.innerHTML = `
+          <div style="text-align:center; color:#64748b; padding-top:15px; font-size:0.82rem;">
+            前方視野内に該当スポットが見つかりません
+          </div>`;
+        return;
+      }
+
+      spotListEl.innerHTML = state.filteredSpots.map(spot => `
+        <div class="spot-card ${spot.id === state.selectedSpotId ? 'selected' : ''}" onclick="selectSpot('${spot.id}')">
+          <div class="spot-info">
+            <div class="spot-name">${spot.icon} ${spot.name}</div>
+            <div class="spot-meta">
+              <span>距離: ${spot.distance.toFixed(1)} km</span>
+              <span>方位: ${Math.round(spot.bearing)}°</span>
+            </div>
+          </div>
+          <button class="btn-speak" onclick="event.stopPropagation(); speakSpot('${spot.name}', ${spot.distance})">
+            音声案内
+          </button>
+        </div>
+      `).join('');
+    }
+
+    function selectSpot(id) {
+      state.selectedSpotId = id;
+      updateSpotFiltering();
+    }
+
+    function speakText(text) {
+      if (!('speechSynthesis' in window)) return;
+      window.speechSynthesis.cancel();
+      const uttr = new SpeechSynthesisUtterance(text);
+      uttr.lang = 'ja-JP';
+      window.speechSynthesis.speak(uttr);
+    }
+
+    function speakSpot(name, dist) {
+      speakText(`前方 ${dist.toFixed(1)} キロメートル先に、${name} があります。`);
+    }
+
+    function handlePositionUpdate(lat, lng, heading, speed, accuracy) {
+      if (accuracy && accuracy > 200 && state.hasRealLocation) {
+        console.warn('GPS精度悪化のため現在地更新をスキップ（位置維持）:', accuracy);
+        gpsStatusEl.textContent = 'GPS信号微弱';
+        gpsStatusEl.className = 'status-badge warn';
+        return;
+      }
+
+      if (state.hasRealLocation && (heading === null || isNaN(heading))) {
+        const distMoved = calculateDistance(state.currentPos.lat, state.currentPos.lng, lat, lng);
+        if (distMoved > 0.005) {
+          heading = calculateBearing(state.currentPos.lat, state.currentPos.lng, lat, lng);
+        } else {
+          heading = state.currentPos.heading;
+        }
+      }
+
+      state.currentPos.lat = lat;
+      state.currentPos.lng = lng;
+      state.hasRealLocation = true;
+
+      if (heading !== null && !isNaN(heading)) state.currentPos.heading = heading;
+      if (speed !== null && !isNaN(speed)) state.currentPos.speed = Math.round(speed * 3.6);
+
+      speedValEl.textContent = `${state.currentPos.speed} km/h`;
+      headingValEl.textContent = `${Math.round(state.currentPos.heading)}°`;
+
+      if (state.isTracking) {
+        gpsStatusEl.textContent = 'GPS追跡中';
+        gpsStatusEl.className = 'status-badge active';
+      }
+
+      fetchOverpassData();
+    }
+
+    function stopDemoMode() {
+      if (state.demoInterval) {
+        clearInterval(state.demoInterval);
+        state.demoInterval = null;
+      }
+      state.isDemo = false;
+      btnDemo.textContent = 'デモ走行';
+    }
+
+    function toggleGPS() {
+      stopDemoMode();
+
+      if (state.isTracking) {
+        if (state.watchId) navigator.geolocation.clearWatch(state.watchId);
+        state.watchId = null;
+        state.isTracking = false;
+        gpsStatusEl.textContent = 'GPS停止中';
+        gpsStatusEl.className = 'status-badge';
+        btnToggleGPS.textContent = 'GPS開始';
+      } else {
+        if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+          alert('【エラー】GPS機能は HTTPS（https://〜）接続のWebサイトでのみ利用可能です。');
+          return;
+        }
+
+        if (!navigator.geolocation) {
+          alert('お使いの端末はGPS機能に対応していません。');
+          return;
+        }
+
+        gpsStatusEl.textContent = '位置情報を取得中...';
+
+        state.watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            const { latitude, longitude, heading, speed, accuracy } = pos.coords;
+            handlePositionUpdate(latitude, longitude, heading, speed, accuracy);
+            
+            state.isTracking = true;
+            gpsStatusEl.textContent = 'GPS追跡中';
+            gpsStatusEl.className = 'status-badge active';
+            btnToggleGPS.textContent = 'GPS停止';
+          },
+          (err) => {
+            gpsStatusEl.textContent = 'GPS信号切断';
+            gpsStatusEl.className = 'status-badge warn';
+          },
+          { 
+            enableHighAccuracy: true, 
+            timeout: 20000, 
+            maximumAge: 2000 
+          }
+        );
+      }
+    }
+
+    function toggleDemo() {
+      if (state.isTracking) toggleGPS();
+
+      if (state.isDemo) {
+        stopDemoMode();
+        gpsStatusEl.textContent = 'GPS停止中';
+        gpsStatusEl.className = 'status-badge';
+      } else {
+        state.isDemo = true;
+        btnDemo.textContent = 'デモ停止';
+        gpsStatusEl.textContent = 'デモ走行中';
+        gpsStatusEl.className = 'status-badge active';
+
+        fetchOverpassData(true);
+
+        state.demoInterval = setInterval(() => {
+          const newLat = state.currentPos.lat + 0.0003;
+          const newLng = state.currentPos.lng + 0.0003;
+          const newHeading = (state.currentPos.heading + 1) % 360;
+          handlePositionUpdate(newLat, newLng, newHeading, 45, 10);
+        }, 1000);
+      }
+    }
+
+    // 初回読み込み
+    fetchOverpassData(true);
+  </script>
+</body>
+</html>
