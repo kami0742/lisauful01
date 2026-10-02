@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>ドライブ進行方向ナビ & 道路レーダー</title>
 
-  <!-- Web App Manifest (PWA対応) -->
+  <!-- PWA対応 -->
   <link rel="manifest" href='data:application/manifest+json,{"name":"ドライブレーダーナビ","short_name":"ドライブナビ","start_url":".","display":"standalone","background_color":"#0f172a","theme_color":"#0f172a","icons":[{"src":"https://via.placeholder.com/192/0284c7/ffffff?text=Radar","sizes":"192x192","type":"image/png"}]}'>
   <meta name="theme-color" content="#0f172a">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -284,10 +284,10 @@
           <label>カテゴリー</label>
           <select id="categorySelect">
             <option value="cafe">☕ カフェ</option>
-            <option value="diner">🍚 食堂 / 和食・レストラン</option>
-            <option value="gluten_free">🌾 グルテンフリー対応店</option>
-            <option value="michi_no_eki">🅿️ 道の駅・休憩スポット</option>
-            <option value="tourism">🏞️ 観光地・名所</option>
+            <option value="diner">🍚 食堂 / レストラン / 和食</option>
+            <option value="gluten_free">🌾 グルテンフリー・自然食</option>
+            <option value="michi_no_eki">🅿️ 道の駅・サービスエリア・パーキング</option>
+            <option value="tourism">🏞️ 観光地・名所・ビューポイント</option>
             <option value="all">📍 すべて</option>
           </select>
         </div>
@@ -328,7 +328,6 @@
       demoInterval: null,
       watchId: null,
       lastFetchPos: null,
-      // 初期座標（京都市街地周辺）
       currentPos: { lat: 35.0116, lng: 135.7681, heading: 0, speed: 0 },
       hasRealLocation: false,
       spots: [],
@@ -449,32 +448,43 @@
     async function fetchOverpassData(force = false) {
       const { lat, lng } = state.currentPos;
 
-      // 500m以上移動していない場合は過剰なAPI通信を回避
       if (!force && state.lastFetchPos) {
         const movedDist = calculateDistance(state.lastFetchPos.lat, state.lastFetchPos.lng, lat, lng);
-        if (movedDist < 0.5) return;
+        if (movedDist < 0.4) return;
       }
 
       state.lastFetchPos = { lat, lng };
       const radiusMeters = state.maxDistanceKm * 1000;
 
-      let categoryTag = '';
+      let overpassCategoryFilter = '';
       switch (state.category) {
-        case 'cafe': categoryTag = 'node["amenity"="cafe"]'; break;
-        case 'diner': categoryTag = 'node["amenity"="restaurant"]'; break;
-        case 'gluten_free': categoryTag = 'node["diet:gluten_free"] node["diet:gluten_free"="yes"]'; break;
-        case 'michi_no_eki': categoryTag = 'node["tourism"="information"] node["highway"="rest_area"]'; break;
-        case 'tourism': categoryTag = 'node["tourism"="attraction"] node["tourism"="viewpoint"]'; break;
-        default: categoryTag = 'node["amenity"~"cafe|restaurant"] node["tourism"~"attraction|viewpoint"]'; break;
+        case 'cafe':
+          overpassCategoryFilter = 'nwr["amenity"="cafe"];';
+          break;
+        case 'diner':
+          overpassCategoryFilter = 'nwr["amenity"~"restaurant|food_court|fast_food"];';
+          break;
+        case 'gluten_free':
+          overpassCategoryFilter = 'nwr["diet:gluten_free"="yes"]; nwr["organic"="yes"];';
+          break;
+        case 'michi_no_eki':
+          overpassCategoryFilter = 'nwr["highway"="rest_area"]; nwr["highway"="services"]; nwr["tourism"="information"];';
+          break;
+        case 'tourism':
+          overpassCategoryFilter = 'nwr["tourism"~"attraction|viewpoint|museum"];';
+          break;
+        default: // all
+          overpassCategoryFilter = 'nwr["amenity"~"cafe|restaurant"]; nwr["highway"="rest_area"]; nwr["tourism"~"attraction|viewpoint"];';
+          break;
       }
 
       const query = `
-        [out:json][timeout:10];
+        [out:json][timeout:15];
         (
-          ${categoryTag.split(' ').map(q => `${q}(around:${radiusMeters},${lat},${lng});`).join('\n')}
+          ${overpassCategoryFilter.replace(/;/g, `(around:${radiusMeters},${lat},${lng});`)}
           way["highway"~"motorway|trunk|primary|secondary"](around:${radiusMeters},${lat},${lng});
         );
-        out body;
+        out center body;
         >;
         out skel qt;
       `;
@@ -482,32 +492,49 @@
       try {
         const res = await fetch('https://overpass-api.de/api/interpreter', {
           method: 'POST',
-          body: query
+          body: 'data=' + encodeURIComponent(query)
         });
+        
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         
         const nodeMap = {};
-        data.elements.filter(el => el.type === 'node').forEach(node => {
-          nodeMap[node.id] = { lat: node.lat, lng: node.lon };
+        data.elements.forEach(el => {
+          if (el.type === 'node') {
+            nodeMap[el.id] = { lat: el.lat, lng: el.lon };
+          }
         });
 
-        state.spots = data.elements.filter(el => el.type === 'node' && el.tags && el.tags.name).map(el => {
-          let cat = state.category;
-          if (el.tags['diet:gluten_free']) cat = 'gluten_free';
-          else if (el.tags.amenity === 'cafe') cat = 'cafe';
-          else if (el.tags.amenity === 'restaurant') cat = 'diner';
+        const newSpots = [];
+        data.elements.forEach(el => {
+          if (el.tags && (el.tags.name || el.tags['name:ja'])) {
+            let itemLat = el.lat;
+            let itemLng = el.lon;
 
-          return {
-            id: el.id,
-            name: el.tags.name || el.tags['name:ja'] || '名称不明のスポット',
-            lat: el.lat,
-            lng: el.lon,
-            category: cat,
-            icon: categoryIcons[cat] || '📍'
-          };
+            if (!itemLat && el.center) {
+              itemLat = el.center.lat;
+              itemLng = el.center.lon;
+            }
+
+            if (itemLat && itemLng) {
+              let cat = state.category;
+              const name = el.tags['name:ja'] || el.tags.name;
+
+              newSpots.push({
+                id: el.id,
+                name: name,
+                lat: itemLat,
+                lng: itemLng,
+                category: cat,
+                icon: categoryIcons[cat] || '📍'
+              });
+            }
+          }
         });
 
-        state.roads = data.elements.filter(el => el.type === 'way' && el.nodes).map(way => {
+        state.spots = newSpots;
+
+        state.roads = data.elements.filter(el => el.type === 'way' && el.nodes && !el.tags.amenity).map(way => {
           const points = way.nodes.map(nid => nodeMap[nid]).filter(p => p !== undefined);
           return {
             id: way.id,
@@ -517,7 +544,7 @@
         });
 
       } catch (err) {
-        console.warn('Overpass API通信エラー。現在地周りのモックデータを生成します。', err);
+        console.warn('Overpass APIからの読み込みに制限が発生しました。サンプルデータを生成します。', err);
         generateMockDataAroundCurrent();
       }
 
@@ -527,9 +554,10 @@
     function generateMockDataAroundCurrent() {
       const { lat, lng } = state.currentPos;
       state.spots = [
-        { id: 'm1', name: "近くのカフェ", category: "cafe", icon: "☕", lat: lat + 0.01, lng: lng + 0.008 },
-        { id: 'm2', name: "地元の食堂", category: "diner", icon: "🍚", lat: lat + 0.015, lng: lng + 0.002 },
-        { id: 'm3', name: "ドライブイン休憩所", category: "michi_no_eki", icon: "🅿", lat: lat + 0.02, lng: lng + 0.015 }
+        { id: 'm1', name: "レイクサイド カフェ", category: state.category, icon: categoryIcons[state.category] || "☕", lat: lat + 0.008, lng: lng + 0.006 },
+        { id: 'm2', name: "ドライブイン 和食処", category: state.category, icon: categoryIcons[state.category] || "🍚", lat: lat + 0.012, lng: lng + 0.002 },
+        { id: 'm3', name: "道の駅 道路休憩所", category: state.category, icon: categoryIcons[state.category] || "🅿️", lat: lat + 0.018, lng: lng + 0.015 },
+        { id: 'm4', name: "展望グラウンド 観光地", category: state.category, icon: categoryIcons[state.category] || "🏞️", lat: lat + 0.025, lng: lng - 0.008 }
       ];
 
       state.roads = [
@@ -539,7 +567,7 @@
           points: [
             { lat: lat - 0.01, lng: lng - 0.005 },
             { lat: lat, lng: lng },
-            { lat: lat + 0.02, lng: lng + 0.01 }
+            { lat: lat + 0.03, lng: lng + 0.02 }
           ]
         }
       ];
@@ -724,7 +752,7 @@
       if (state.filteredSpots.length === 0) {
         spotListEl.innerHTML = `
           <div style="text-align:center; color:#64748b; padding-top:15px; font-size:0.82rem;">
-            前方視野内にスポットはありません
+            前方視野内に該当スポットが見つかりません
           </div>`;
         return;
       }
@@ -762,9 +790,7 @@
       speakText(`前方 ${dist.toFixed(1)} キロメートル先に、${name} があります。`);
     }
 
-    // ★ 位置情報＆途絶防止補正ロジック ★
     function handlePositionUpdate(lat, lng, heading, speed, accuracy) {
-      // 測位誤差が200m以上の異常値（屋内やトンネル出口のノイズ）の場合は位置を引き戻さず維持
       if (accuracy && accuracy > 200 && state.hasRealLocation) {
         console.warn('GPS精度悪化のため現在地更新をスキップ（位置維持）:', accuracy);
         gpsStatusEl.textContent = 'GPS信号微弱';
@@ -772,13 +798,12 @@
         return;
       }
 
-      // 端末から方向（heading）が送られてこない場合の進行ベクトル補正
       if (state.hasRealLocation && (heading === null || isNaN(heading))) {
         const distMoved = calculateDistance(state.currentPos.lat, state.currentPos.lng, lat, lng);
-        if (distMoved > 0.005) { // 5メートル以上移動した場合に進行方向を計算
+        if (distMoved > 0.005) {
           heading = calculateBearing(state.currentPos.lat, state.currentPos.lng, lat, lng);
         } else {
-          heading = state.currentPos.heading; // 停止中は直前の方位を保持
+          heading = state.currentPos.heading;
         }
       }
 
@@ -797,7 +822,8 @@
         gpsStatusEl.className = 'status-badge active';
       }
 
-      // 現在地周辺の地図・スポット更新
+      // GPS位置更新に合わせてスポット計算・再描画
+      updateSpotFiltering();
       fetchOverpassData();
     }
 
@@ -821,7 +847,6 @@
         gpsStatusEl.className = 'status-badge';
         btnToggleGPS.textContent = 'GPS開始';
       } else {
-        // HTTPS環境チェック
         if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
           alert('【エラー】GPS機能は HTTPS（https://〜）接続のWebサイトでのみ利用可能です。');
           return;
@@ -845,11 +870,6 @@
             btnToggleGPS.textContent = 'GPS停止';
           },
           (err) => {
-            let msg = 'GPS受信エラー';
-            if (err.code === 1) msg = '位置情報サービスを許可してください。';
-            else if (err.code === 3) msg = 'GPSの取得に時間がかかっています。屋外で再試行してください。';
-            
-            // エラーが発生しても直前の取得位置は初期化しない
             gpsStatusEl.textContent = 'GPS信号切断';
             gpsStatusEl.className = 'status-badge warn';
           },
@@ -886,7 +906,7 @@
       }
     }
 
-    // 初回描画
+    // 初回読み込み
     fetchOverpassData(true);
   </script>
 </body>
