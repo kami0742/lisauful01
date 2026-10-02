@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>ドライブ進行方向ナビ & 道路レーダー</title>
 
-  <!-- PWA Manifest -->
+  <!-- Web App Manifest (PWA対応) -->
   <link rel="manifest" href='data:application/manifest+json,{"name":"ドライブレーダーナビ","short_name":"ドライブナビ","start_url":".","display":"standalone","background_color":"#0f172a","theme_color":"#0f172a","icons":[{"src":"https://via.placeholder.com/192/0284c7/ffffff?text=Radar","sizes":"192x192","type":"image/png"}]}'>
   <meta name="theme-color" content="#0f172a">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -60,10 +60,15 @@
       border-radius: 12px;
       background-color: #334155;
       color: #94a3b8;
+      transition: all 0.3s ease;
     }
     .status-badge.active {
       background-color: #065f46;
       color: #34d399;
+    }
+    .status-badge.warn {
+      background-color: #854d0e;
+      color: #fde047;
     }
 
     main {
@@ -78,7 +83,7 @@
       width: 100%;
       height: 300px;
       min-height: 260px;
-      background: radial-gradient(circle at 50% 85%, #1e293b 0%, #0f172a 100%);
+      background: radial-gradient(circle at 50% 82%, #1e293b 0%, #0f172a 100%);
       display: flex;
       justify-content: center;
       align-items: flex-end;
@@ -322,9 +327,10 @@
       isDemo: false,
       demoInterval: null,
       watchId: null,
-      lastFetchPos: null, // 前回データ取得した座標
+      lastFetchPos: null,
+      // 初期座標（京都市街地周辺）
       currentPos: { lat: 35.0116, lng: 135.7681, heading: 0, speed: 0 },
-      hasRealLocation: false, // 実際のGPSを取得したか
+      hasRealLocation: false,
       spots: [],
       roads: [],
       filteredSpots: [],
@@ -511,7 +517,7 @@
         });
 
       } catch (err) {
-        console.warn('Overpass API通信エラー。現在地周りのモックデータを追加生成します。', err);
+        console.warn('Overpass API通信エラー。現在地周りのモックデータを生成します。', err);
         generateMockDataAroundCurrent();
       }
 
@@ -523,7 +529,7 @@
       state.spots = [
         { id: 'm1', name: "近くのカフェ", category: "cafe", icon: "☕", lat: lat + 0.01, lng: lng + 0.008 },
         { id: 'm2', name: "地元の食堂", category: "diner", icon: "🍚", lat: lat + 0.015, lng: lng + 0.002 },
-        { id: 'm3', name: "ドライブイン休憩所", category: "michi_no_eki", icon: "🅿️️", lat: lat + 0.02, lng: lng + 0.015 }
+        { id: 'm3', name: "ドライブイン休憩所", category: "michi_no_eki", icon: "🅿", lat: lat + 0.02, lng: lng + 0.015 }
       ];
 
       state.roads = [
@@ -756,7 +762,26 @@
       speakText(`前方 ${dist.toFixed(1)} キロメートル先に、${name} があります。`);
     }
 
-    function handlePositionUpdate(lat, lng, heading, speed) {
+    // ★ 位置情報＆途絶防止補正ロジック ★
+    function handlePositionUpdate(lat, lng, heading, speed, accuracy) {
+      // 測位誤差が200m以上の異常値（屋内やトンネル出口のノイズ）の場合は位置を引き戻さず維持
+      if (accuracy && accuracy > 200 && state.hasRealLocation) {
+        console.warn('GPS精度悪化のため現在地更新をスキップ（位置維持）:', accuracy);
+        gpsStatusEl.textContent = 'GPS信号微弱';
+        gpsStatusEl.className = 'status-badge warn';
+        return;
+      }
+
+      // 端末から方向（heading）が送られてこない場合の進行ベクトル補正
+      if (state.hasRealLocation && (heading === null || isNaN(heading))) {
+        const distMoved = calculateDistance(state.currentPos.lat, state.currentPos.lng, lat, lng);
+        if (distMoved > 0.005) { // 5メートル以上移動した場合に進行方向を計算
+          heading = calculateBearing(state.currentPos.lat, state.currentPos.lng, lat, lng);
+        } else {
+          heading = state.currentPos.heading; // 停止中は直前の方位を保持
+        }
+      }
+
       state.currentPos.lat = lat;
       state.currentPos.lng = lng;
       state.hasRealLocation = true;
@@ -767,7 +792,12 @@
       speedValEl.textContent = `${state.currentPos.speed} km/h`;
       headingValEl.textContent = `${Math.round(state.currentPos.heading)}°`;
 
-      // 現在地周辺の地図データ・スポットを取得＆更新
+      if (state.isTracking) {
+        gpsStatusEl.textContent = 'GPS追跡中';
+        gpsStatusEl.className = 'status-badge active';
+      }
+
+      // 現在地周辺の地図・スポット更新
       fetchOverpassData();
     }
 
@@ -788,9 +818,15 @@
         state.watchId = null;
         state.isTracking = false;
         gpsStatusEl.textContent = 'GPS停止中';
-        gpsStatusEl.classList.remove('active');
+        gpsStatusEl.className = 'status-badge';
         btnToggleGPS.textContent = 'GPS開始';
       } else {
+        // HTTPS環境チェック
+        if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+          alert('【エラー】GPS機能は HTTPS（https://〜）接続のWebサイトでのみ利用可能です。');
+          return;
+        }
+
         if (!navigator.geolocation) {
           alert('お使いの端末はGPS機能に対応していません。');
           return;
@@ -800,23 +836,28 @@
 
         state.watchId = navigator.geolocation.watchPosition(
           (pos) => {
-            const { latitude, longitude, heading, speed } = pos.coords;
-            handlePositionUpdate(latitude, longitude, heading, speed);
+            const { latitude, longitude, heading, speed, accuracy } = pos.coords;
+            handlePositionUpdate(latitude, longitude, heading, speed, accuracy);
             
             state.isTracking = true;
             gpsStatusEl.textContent = 'GPS追跡中';
-            gpsStatusEl.classList.add('active');
+            gpsStatusEl.className = 'status-badge active';
             btnToggleGPS.textContent = 'GPS停止';
           },
           (err) => {
             let msg = 'GPS受信エラー';
             if (err.code === 1) msg = '位置情報サービスを許可してください。';
-            else if (err.code === 3) msg = 'GPSの取得に時間がかかっています。屋外へ移動してください。';
-            alert(msg);
-            gpsStatusEl.textContent = 'GPSエラー';
-            gpsStatusEl.classList.remove('active');
+            else if (err.code === 3) msg = 'GPSの取得に時間がかかっています。屋外で再試行してください。';
+            
+            // エラーが発生しても直前の取得位置は初期化しない
+            gpsStatusEl.textContent = 'GPS信号切断';
+            gpsStatusEl.className = 'status-badge warn';
           },
-          { enableHighAccuracy: true, timeout: 20000, maximumAge: 1000 }
+          { 
+            enableHighAccuracy: true, 
+            timeout: 20000, 
+            maximumAge: 2000 
+          }
         );
       }
     }
@@ -827,12 +868,12 @@
       if (state.isDemo) {
         stopDemoMode();
         gpsStatusEl.textContent = 'GPS停止中';
-        gpsStatusEl.classList.remove('active');
+        gpsStatusEl.className = 'status-badge';
       } else {
         state.isDemo = true;
         btnDemo.textContent = 'デモ停止';
         gpsStatusEl.textContent = 'デモ走行中';
-        gpsStatusEl.classList.add('active');
+        gpsStatusEl.className = 'status-badge active';
 
         fetchOverpassData(true);
 
@@ -840,12 +881,12 @@
           const newLat = state.currentPos.lat + 0.0003;
           const newLng = state.currentPos.lng + 0.0003;
           const newHeading = (state.currentPos.heading + 1) % 360;
-          handlePositionUpdate(newLat, newLng, newHeading, 45);
+          handlePositionUpdate(newLat, newLng, newHeading, 45, 10);
         }, 1000);
       }
     }
 
-    // 初回起動時のデータ描画
+    // 初回描画
     fetchOverpassData(true);
   </script>
 </body>
